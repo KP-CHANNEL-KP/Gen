@@ -6,11 +6,11 @@ interface Env {
   TARGET_URL_BASE: string;   // http://saikokowinmyanmar123.com
 }
 
-async function send(t: string, c: string, m: string) {
-  await fetch(`https://api.telegram.org/bot${t}/sendMessage`, {
+async function send(token: string, chatId: string, text: string) {
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: c, text: m, parse_mode: "Markdown" })
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" })
   }).catch(() => {});
 }
 
@@ -19,96 +19,125 @@ async function run(env: Env, chatId: string, deviceId: string) {
 
   try {
     // Step 1: Login
-    const login = await fetch(env.TARGET_URL_BASE + "/KEYGEN/index.php", {
+    const loginRes = await fetch(env.TARGET_URL_BASE + "/KEYGEN/index.php", {
       method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         user_field: env.TARGET_USERNAME,
         pass_field: env.TARGET_PASSWORD,
         login_submit: "Login"
       }).toString(),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       redirect: "follow"
     });
 
-    const c = login.headers.getSetCookie();
-    if (c) cookie = c.map(x => x.split(";")[0]).join("; ");
-    if (!cookie) return await send(env.BOT_TOKEN, chatId, "Login မအောင်မြင်ပါ");
+    const setCookies = loginRes.headers.getSetCookie();
+    if (setCookies && setCookies.length > 0) {
+      cookie = setCookies.map(c => c.split(";")[0]).join("; ");
+    }
+    if (!cookie) {
+      return await send(env.BOT_TOKEN, chatId, "❌ Login မအောင်မြင်ပါ။ Username/Password စစ်ပါ။");
+    }
 
-    await send(env.BOT_TOKEN, chatId, "Login အောင်မြင်ပါပြီ ✅\nDashboard ရောက်ပါပြီ...");
+    await send(env.BOT_TOKEN, chatId, "✅ Login အောင်မြင်ပါပြီ!\n⏳ Generate form ဖွင့်နေပါပြီ...");
 
-    // Step 2: Dashboard ကနေ Generate New Key ခလုတ်ရှာ
-    const dash = await fetch(env.TARGET_URL_BASE + "/KEYGEN/dashboard.php", {
-      headers: { Cookie: cookie }
+    // Step 2: မင်း ပြောတဲ့အတိုင်း တိုက်ရိုက် generate URL ကို GET လုပ် (form စာမျက်နှာ ရောက်ရန်)
+    const formUrl = env.TARGET_URL_BASE + "/KEYGEN/keys.php?action=generate";
+    const formRes = await fetch(formUrl, {
+      headers: {
+        "Cookie": cookie,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+      }
     });
-    const dashHtml = await dash.text();
 
-    // ခလုတ်ထဲက URL ထုတ်ယူ (onclick ထဲက သို့မဟုတ် href)
-    const genLinkMatch = dashHtml.match(/href=["']([^"']*keys\.php\?action=generate[^"']*)["']/) ||
-                         dashHtml.match(/window\.location=["']([^"']*keys\.php\?action=generate[^"']*)["']/);
-    if (!genLinkMatch) return await send(env.BOT_TOKEN, chatId, "Generate ခလုတ်မတွေ့ပါ");
+    const formHtml = await formRes.text();
+    if (formHtml.includes("Login") || formRes.status !== 200) {
+      return await send(env.BOT_TOKEN, chatId, "❌ Session ပျောက်သွားပါပြီ။ နောက်တစ်ကြိမ် စမ်းကြည့်ပါ။");
+    }
 
-    const genUrl = env.TARGET_URL_BASE + "/" + genLinkMatch[1].replace(/^\/+/, "");
+    await send(env.BOT_TOKEN, chatId, "✅ Form ဖွင့်အောင်မြင်ပါပြီ!\n⏳ Key ထုတ်နေပါပြီ...");
 
-    await send(env.BOT_TOKEN, chatId, "Generate Form ဖွင့်နေပါပြီ...");
-
-    // Step 3: Generate Form ဖွင့်
-    const form = await fetch(genUrl, { headers: { Cookie: cookie } });
-    const formHtml = await form.text();
-
-    // Step 4: Generate Key POST
-    const postRes = await fetch(env.TARGET_URL_BASE + "/KEYGEN/keys.php", {
+    // Step 3: Generate Key POST (form ကနေ တိုက်ရိုက် ထုတ်ယူပြီး ပို့)
+    const genRes = await fetch(env.TARGET_URL_BASE + "/KEYGEN/keys.php", {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        "Cookie": cookie
+        "Cookie": cookie,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
       },
       body: new URLSearchParams({
-        device_type: "one",
+        action: "generate",  // action ထည့်ထားတယ်
+        device_type: "one",  // One Device
         days: "30",
         hours: "0",
         minutes: "0",
-        device_id_manual: deviceId,
-        generate_key: "Generate Key"
-      }).toString()
+        device_id_manual: deviceId,  // Telegram ကနေ လာတဲ့ ID
+        generate_key: "Generate Key"  // ခလုတ်ရဲ့ value
+      }).toString(),
+      redirect: "follow"
     });
 
-    const result = await postRes.text();
+    const resultHtml = await genRes.text();
 
-    // Step 5: Key ရှာ
-    const key = result.match(/([A-Za-z0-9+\/=]{20,})/)?.[0];
-    if (!key) {
-      const s = result.substring(0, 500);
-      return await send(env.BOT_TOKEN, chatId, `Key မတွေ့ပါ\n\n\`\`\`\n${s}\n\`\`\``);
+    // Step 4: Key ထုတ်ယူ (မင်း ပေးထားတဲ့ နမူနာ ပုံစံအတိုင်း - Base64-like key ရှာ)
+    // ဥပမာ: T0/dp7GDF/HO3rA9Gw++Hg== လို ရှာမယ် (20+ လုံး, / + = ပါနိုင်တယ်)
+    const keyMatch = resultHtml.match(/([A-Za-z0-9+\/]{20,}[=]{0,2})/);
+    if (!keyMatch || keyMatch[0].length < 20) {
+      // Debug အတွက် HTML snippet ပို့
+      const snippet = resultHtml.substring(0, 800).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return await send(env.BOT_TOKEN, chatId, 
+        `❌ Key ရှာမတွေ့ပါ။\n\n**Debug HTML:**\n\`\`\`html\n${snippet}...\n\`\`\`\n\nဒီ snippet ကို ငါ့ကို ပို့ပေးပါ၊ ချက်ချင်း ပြင်ပေးမယ်။`
+      );
     }
 
-    await send(env.BOT_TOKEN, chatId, `Key ထွက်ပါပြီ!\n\n\`\( {key}\`\n\nDevice ID: \` \){deviceId}\``);
+    const key = keyMatch[0].trim();
 
-  } catch (e: any) {
-    await send(env.BOT_TOKEN, chatId, "Error: " + e.message);
+    // Step 5: Telegram ကနေ ပြန်ပို့
+    await send(env.BOT_TOKEN, chatId, 
+      `✅ **Key Generate အောင်မြင်ပါပြီ!**\n\n\`\( {key}\`\n\n**Device ID:** \` \){deviceId}\`\n\nဒီ key ကို copy လုပ်ပြီး သုံးပါ။`
+    );
+
+  } catch (err: any) {
+    await send(env.BOT_TOKEN, chatId, `❌ Error ဖြစ်ပွားပါပြီ: ${err.message}`);
   }
 }
 
 export default {
-  async fetch(req: Request, env: Env) {
-    if (req.method !== "POST") return new Response("ok");
+  async fetch(request: Request, env: Env): Promise<Response> {
+    if (request.method !== "POST") {
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+
     try {
-      const u = await req.json<any>();
-      const text = u.message?.text?.trim();
-      const chat = u.message?.chat.id.toString();
-      if (!text || !chat) return new Response("ok");
+      const update = await request.json() as any;
+      const text = update.message?.text?.trim();
+      const chatId = update.message?.chat?.id?.toString();
+
+      if (!text || !chatId) {
+        return new Response("OK", { status: 200 });
+      }
 
       if (text === "/start") {
-        await send(env.BOT_TOKEN, chat, "Bot အဆင်သင့်ပါပြီ!\n\n`/keygen မင်းရဲ့ Device ID`");
-        return new Response("ok");
+        await send(env.BOT_TOKEN, chatId, 
+          `👋 **VPN Keygen Bot** ကို ကြိုဆိုပါတယ်!\n\n**သုံးပုံ:**\n\`/keygen [မင်းရဲ့ Device ID]\`\n\n**ဥပမာ:**\n\`/keygen iPhone16\`\n\nGenerate လုပ်ပြီး key ကို ချက်ချင်း ပြန်ပို့ပေးမယ်။`
+        );
+        return new Response("OK", { status: 200 });
       }
+
       if (text.startsWith("/keygen ")) {
-        const id = text.slice(8).trim();
-        if (!id) return await send(env.BOT_TOKEN, chat, "Device ID ထည့်ပါ");
-        await send(env.BOT_TOKEN, chat, "ခဏစောင့်ပါ... ⏳");
-        await run(env, chat, id);
-        return new Response("ok");
+        const deviceId = text.slice(8).trim();
+        if (!deviceId) {
+          await send(env.BOT_TOKEN, chatId, "❌ Device ID ထည့်ပါ ညီ!\n\nဥပမာ: `/keygen MyPhone123`");
+          return new Response("OK", { status: 200 });
+        }
+
+        await run(env, chatId, deviceId);
+        return new Response("OK", { status: 200 });
       }
-      return new Response("ok");
-    } catch { return new Response("ok"); }
+
+      return new Response("OK", { status: 200 });
+    } catch (error) {
+      console.error("Worker error:", error);
+      return new Response("Internal Error", { status: 500 });
+    }
   }
 };
