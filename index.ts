@@ -23,6 +23,13 @@ interface TelegramUpdate {
 const KEYGEN_PATH = "/KEYGEN/index.php";
 
 // ----------------------------------------------------
+// --- Helper: Escape for MarkdownV2 ---
+// ----------------------------------------------------
+function escapeMarkdownV2(text: string): string {
+  return text.replace(/([_\*\[\]\(\)\~\`>#\+\-=|\{\}\.\!])/g, '\\$1');
+}
+
+// ----------------------------------------------------
 // --- Core Logic: Multi-Step Automation Function (DEBUGGING ENABLED) ---
 // ----------------------------------------------------
 
@@ -47,24 +54,27 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams(loginPayload).toString(),
-      redirect: 'manual'
+      redirect: 'follow'  // အရေးကြီး: Redirect လိုက်အောင်လုပ်ရန်
     });
 
-    const setCookieHeader = loginResponse.headers.get('Set-Cookie');
-    if (setCookieHeader) {
-      SESSION_DATA.cookie = setCookieHeader.split(';')[0];
+    const setCookies = loginResponse.headers.getSetCookie();
+    if (setCookies && setCookies.length > 0) {
+      SESSION_DATA.cookie = setCookies.map(c => c.split(';')[0]).join('; ');
     }
 
     if (!SESSION_DATA.cookie) {
-        await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ လော့ဂ်အင် မအောင်မြင်ပါ။ အချက်အလက်များကို စစ်ဆေးပါ။");
+        await sendTelegramMessage(env.BOT_TOKEN, chatId || env.CHAT_ID, "❌ လော့ဂ်အင် မအောင်မြင်ပါ။ အချက်အလက်များကို စစ်ဆေးပါ။", 'MarkdownV2');
         return "Login Failed";
     }
+
+    // Login ပြီးတဲ့ URL ကို ယူမယ် (dynamic ဖြစ်အောင်)
+    const KEYGEN_URL = loginResponse.url;  // သို့မဟုတ် လိုအပ်ရင် env.TARGET_URL_BASE + '/dashboard/keygen.php' လိုမျိုး ပြင်ပါ
 
     // --- 2. GENERATE KEY ACTION (POST Request) ---
     const keygenPayload = {
       // ⚠️ ဤ Form Field Names များကိုလည်း စစ်ဆေးရပါမည်
       'action_type': 'generate_new_key',
-      'device_count': '1',               
+      'device_count': '1',  // One Device
       'days': '30',                      
       'hours': '0',
       'minutes': '0',
@@ -72,13 +82,14 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
       'generate_submit': 'Generate Key' 
     };
 
-    const keygenResponse = await fetch(TARGET_URL, {
+    const keygenResponse = await fetch(KEYGEN_URL, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
             'Cookie': SESSION_DATA.cookie 
         },
-        body: new URLSearchParams(keygenPayload as Record<string, string>).toString()
+        body: new URLSearchParams(keygenPayload).toString(),
+        redirect: 'follow'  // လိုအပ်ရင် redirect လိုက်မယ်
     });
 
     const keygenHTML = await keygenResponse.text();
@@ -93,7 +104,11 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
         /<div class="keygen-result">(.*?)<\/div>/s,
         // 3. Key ကို <b> tag သို့မဟုတ် <h1> tag ထဲကနေ ဆွဲထုတ်ခြင်း
         /<b>(.*?)<\/b>/s,
-        /<h1>(.*?)<\/h1>/s
+        /<h1>(.*?)<\/h1>/s,
+        // 4. အသစ်ထည့်ထားတဲ့ နမူနာ regexes (site အများစုမှာ ရှိနိုင်တယ်)
+        /<pre[^>]*>(.*?)<\/pre>/s,  // Pre tag ထဲမှာ ရှိနိုင်တယ်
+        /<code[^>]*>(.*?)<\/code>/s,  // Code tag ထဲမှာ
+        /Generated Key:\s*([A-Z0-9-]{10,})/i  // Text-based ရှာမယ် (အပေါ်ဆုံး key အတွက်)
     ];
 
     let generatedKey = "🔑 Key not found.";
@@ -101,7 +116,7 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
     // Key Extraction Regex မျိုးစုံနဲ့ စမ်းသပ်ခြင်း
     for (const regex of keyExtractionRegexes) {
         const match = keygenHTML.match(regex);
-        // Match တွေ့ပြီး၊ အရှည် ၅ လုံးထက် ပိုပါက Key အဖြစ် လက်ခံမည်
+        // Match တွေ့ပြီး၊ အရှည် ၅ လုံးထက် ပိုပါက Key အဖြစ် လက်ခံမည် (အပေါ်ဆုံး key ပဲ ယူမယ်)
         if (match && match[1].trim().length > 5) { 
             generatedKey = match[1].trim();
             break; 
@@ -112,21 +127,21 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
     if (generatedKey.startsWith("🔑")) {
         // --- DEBUGGING OUTPUT ---
         const debugOutput = keygenHTML.substring(0, 500); 
-        const debugMessage = `❌ Key ထုတ်ယူခြင်း မအောင်မြင်ပါ။\n\n**Server တုံ့ပြန်မှု နမူနာ (HTML ဖွဲ့စည်းပုံကို စစ်ဆေးရန်):**\n\`\`\`html\n${debugOutput}...\n\`\`\`\n\n**ပြင်ဆင်ရန်:** \`keyExtractionRegexes\` ထဲမှ သင့်ဝက်ဘ်ဆိုက်နှင့် ကိုက်ညီသော Regex ကို ရွေးချယ် အသုံးပြုပါ၊ သို့မဟုတ် အသစ်ထပ်ထည့်ပါ။`;
+        const debugMessage = `❌ Key ထုတ်ယူခြင်း မအောင်မြင်ပါ။\n\n**Server တုံ့ပြန်မှု နမူနာ (HTML ဖွဲ့စည်းပုံကို စစ်ဆေးရန်):**\n\`\`\`html\n${escapeMarkdownV2(debugOutput)}...\n\`\`\`\n\n**ပြင်ဆင်ရန်:** \`keyExtractionRegexes\` ထဲမှ သင့်ဝက်ဘ်ဆိုက်နှင့် ကိုက်ညီသော Regex ကို ရွေးချယ် အသုံးပြုပါ၊ သို့မဟုတ် အသစ်ထပ်ထည့်ပါ။`;
         
-        await sendTelegramMessage(env.BOT_TOKEN, chatId, debugMessage);
+        await sendTelegramMessage(env.BOT_TOKEN, chatId || env.CHAT_ID, debugMessage, 'MarkdownV2');
         return "Key Extraction Failed (Debugging Output Sent)";
     }
 
     // --- 4. SEND KEY TO TELEGRAM ---
-    const telegramMessage = `✅ **Key Generate အောင်မြင်ပါပြီ!**\n\n\`${generatedKey}\`\n\nDevice ID: \`${deviceId}\``;
-    await sendTelegramMessage(env.BOT_TOKEN, chatId, telegramMessage);
+    const telegramMessage = `✅ **Key Generate အောင်မြင်ပါပြီ!**\\n\\n\`\( {escapeMarkdownV2(generatedKey)}\`\\n\\nDevice ID: \` \){escapeMarkdownV2(deviceId)}\``;
+    await sendTelegramMessage(env.BOT_TOKEN, chatId, telegramMessage, 'MarkdownV2');
 
     return "Key Generated and Sent";
 
   } catch (error) {
-    const errorMessage = `❌ အလိုအလျောက်လုပ်ဆောင်မှု Error ဖြစ်ပွား: ${error instanceof Error ? error.message : "အမည်မသိ Error"}`;
-    await sendTelegramMessage(env.BOT_TOKEN, chatId, errorMessage);
+    const errorMessage = `❌ အလိုအလျောက်လုပ်ဆောင်မှု Error ဖြစ်ပွား: ${error instanceof Error ? escapeMarkdownV2(error.message) : "အမည်မသိ Error"}`;
+    await sendTelegramMessage(env.BOT_TOKEN, chatId || env.CHAT_ID, errorMessage, 'MarkdownV2');
     return "Automation Error";
   }
 }
@@ -137,8 +152,9 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
 
 /**
  * Sends a Markdown formatted message back to the specified Telegram chat.
+ * @param parseMode Default 'MarkdownV2'
  */
-async function sendTelegramMessage(token: string, chatId: string, text: string) {
+async function sendTelegramMessage(token: string, chatId: string, text: string, parseMode: 'MarkdownV2' | 'HTML' = 'MarkdownV2') {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   
   try {
@@ -148,7 +164,7 @@ async function sendTelegramMessage(token: string, chatId: string, text: string) 
       body: JSON.stringify({
         chat_id: chatId,
         text: text,
-        parse_mode: 'Markdown'
+        parse_mode: parseMode
       })
     });
   } catch (e) {
@@ -175,16 +191,16 @@ export default {
             const chatId = update.message.chat.id.toString(); 
             
             if (text === '/start') {
-                const welcomeMessage = "👋 **Keygen Bot** မှ ကြိုဆိုပါတယ်။ Device Key Generate လုပ်ဖို့အတွက် အောက်ပါအတိုင်း ပေးပို့ပါ။\n\n`/keygen [သင့်ရဲ့ Device ID]`\n\nဥပမာ- `/keygen My_New_Phone_2025`";
+                const welcomeMessage = "👋 **Keygen Bot** မှ ကြိုဆိုပါတယ်။ Device Key Generate လုပ်ဖို့အတွက် အောက်ပါအတိုင်း ပေးပို့ပါ။\\n\\n`/keygen [သင့်ရဲ့ Device ID]`\\n\\nဥပမာ- `/keygen My_New_Phone_2025`";
                 
-                await sendTelegramMessage(env.BOT_TOKEN, chatId, welcomeMessage);
+                await sendTelegramMessage(env.BOT_TOKEN, chatId, welcomeMessage, 'MarkdownV2');
                 return new Response('Handled /start', { status: 200 });
                 
             } else if (text.startsWith('/keygen ')) {
                 const deviceId = text.substring(8).trim(); 
                 
                 if (deviceId.length === 0) {
-                     await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ Device ID ထည့်သွင်းဖို့ လိုပါတယ်။\n\nအသုံးပြုပုံ: `/keygen [သင့်ရဲ့ Device ID]`");
+                     await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ Device ID ထည့်သွင်းဖို့ လိုပါတယ်။\\n\\nအသုံးပြုပုံ: `/keygen [သင့်ရဲ့ Device ID]`", 'MarkdownV2');
                      return new Response('Missing Device ID', { status: 200 });
                 }
 
