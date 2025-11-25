@@ -1,7 +1,7 @@
 // Define interfaces for Cloudflare Environment Variables
 interface Env {
   BOT_TOKEN: string;
-  CHAT_ID: string;
+  CHAT_ID: string; // Default Chat ID for general errors
   TARGET_USERNAME: string;
   TARGET_PASSWORD: string;
   TARGET_URL_BASE: string; // e.g., http://saikokowinmyanmar123.com
@@ -23,9 +23,13 @@ interface TelegramUpdate {
 const KEYGEN_PATH = "/KEYGEN/index.php";
 
 // ----------------------------------------------------
-// --- Core Logic: Multi-Step Automation Function ---
+// --- Core Logic: Multi-Step Automation Function (DEBUGGING ENABLED) ---
 // ----------------------------------------------------
 
+/**
+ * Handles the login, key generation, and key extraction sequence.
+ * Sends results or debugging info back to the specific Telegram chat.
+ */
 async function runAutomation(env: Env, chatId: string, deviceId: string): Promise<string> {
   const SESSION_DATA: { cookie: string | null } = { cookie: null };
   const TARGET_URL = env.TARGET_URL_BASE + KEYGEN_PATH;
@@ -79,19 +83,36 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
 
     const keygenHTML = await keygenResponse.text();
 
-    // --- 3. EXTRACT THE KEY ---
-    // ⚠️ DEBUGGING: You MUST replace this regex with the correct one after inspecting the HTML output.
-    // ဒီ Regex က မှားနေရင်တောင် HTML နမူနာကို Telegram ကို ပို့ပေးပါလိမ့်မယ်။
-    const keyExtractionRegex = /<h1>(.*?)<\/h1>/s; 
+    // --- 3. EXTRACT THE KEY (Multi-Regex Attempt) ---
     
-    const match = keygenHTML.match(keyExtractionRegex);
-    
-    let generatedKey = match ? match[1].trim() : "🔑 Key not found.";
+    // ⚠️ IMPORTANT: သင့်ရဲ့ ဝက်ဘ်ဆိုက်နဲ့ ကိုက်ညီမယ့် Regex ကို ရွေးချယ်ပြီး အောက်မှာထားပါ
+    const keyExtractionRegexes = [
+        // 1. Key ကို <textarea> tag ထဲကနေ ဆွဲထုတ်ခြင်း (အများဆုံးဖြစ်တတ်သည်)
+        /<textarea[^>]*>(.*?)<\/textarea>/s, 
+        // 2. Key ကို div ထဲက class name (keygen-result) ထဲကနေ ဆွဲထုတ်ခြင်း
+        /<div class="keygen-result">(.*?)<\/div>/s,
+        // 3. Key ကို <b> tag သို့မဟုတ် <h1> tag ထဲကနေ ဆွဲထုတ်ခြင်း
+        /<b>(.*?)<\/b>/s,
+        /<h1>(.*?)<\/h1>/s
+    ];
 
+    let generatedKey = "🔑 Key not found.";
+
+    // Key Extraction Regex မျိုးစုံနဲ့ စမ်းသပ်ခြင်း
+    for (const regex of keyExtractionRegexes) {
+        const match = keygenHTML.match(regex);
+        // Match တွေ့ပြီး၊ အရှည် ၅ လုံးထက် ပိုပါက Key အဖြစ် လက်ခံမည်
+        if (match && match[1].trim().length > 5) { 
+            generatedKey = match[1].trim();
+            break; 
+        }
+    }
+
+    // Key ရှာမတွေ့ပါက Debugging Message ပို့ခြင်း
     if (generatedKey.startsWith("🔑")) {
         // --- DEBUGGING OUTPUT ---
         const debugOutput = keygenHTML.substring(0, 500); 
-        const debugMessage = `❌ Key ထုတ်ယူခြင်း မအောင်မြင်ပါ။\n\n**Server တုံ့ပြန်မှု နမူနာ (HTML ဖွဲ့စည်းပုံကို စစ်ဆေးရန်):**\n\`\`\`html\n${debugOutput}...\n\`\`\`\n\n**ပြင်ဆင်ရန်:** \`keyExtractionRegex\` ကို မှန်ကန်စွာ ပြင်ဆင်ပြီး Deploy ပြန်လုပ်ပါ။`;
+        const debugMessage = `❌ Key ထုတ်ယူခြင်း မအောင်မြင်ပါ။\n\n**Server တုံ့ပြန်မှု နမူနာ (HTML ဖွဲ့စည်းပုံကို စစ်ဆေးရန်):**\n\`\`\`html\n${debugOutput}...\n\`\`\`\n\n**ပြင်ဆင်ရန်:** \`keyExtractionRegexes\` ထဲမှ သင့်ဝက်ဘ်ဆိုက်နှင့် ကိုက်ညီသော Regex ကို ရွေးချယ် အသုံးပြုပါ၊ သို့မဟုတ် အသစ်ထပ်ထည့်ပါ။`;
         
         await sendTelegramMessage(env.BOT_TOKEN, chatId, debugMessage);
         return "Key Extraction Failed (Debugging Output Sent)";
@@ -114,6 +135,9 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
 // --- Telegram API Helper Function ---
 // ----------------------------------------------------
 
+/**
+ * Sends a Markdown formatted message back to the specified Telegram chat.
+ */
 async function sendTelegramMessage(token: string, chatId: string, text: string) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   
