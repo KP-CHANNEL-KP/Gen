@@ -1,6 +1,24 @@
-// [Interfaces နှင့် Environment Variables များသည် ယခင်အတိုင်းပင် ရှိပါသည်]
+// Define interfaces for Cloudflare Environment Variables
+interface Env {
+  BOT_TOKEN: string;
+  CHAT_ID: string; // Default Chat ID for general errors
+  TARGET_USERNAME: string;
+  TARGET_PASSWORD: string;
+  TARGET_URL_BASE: string; // e.g., http://saikokowinmyanmar123.com
+}
 
-// ... (TelegramUpdate, TelegramMessage, Env Interfaces များ) ...
+// Define interfaces for Telegram Update structure
+interface TelegramMessage {
+  text: string;
+  chat: {
+    id: number;
+  };
+}
+
+interface TelegramUpdate {
+  update_id: number;
+  message?: TelegramMessage;
+}
 
 const KEYGEN_PATH = "/KEYGEN/index.php";
 
@@ -8,19 +26,23 @@ const KEYGEN_PATH = "/KEYGEN/index.php";
 // --- Core Logic: Multi-Step Automation Function (DEBUGGING ENABLED) ---
 // ----------------------------------------------------
 
+/**
+ * Handles the login, key generation, and key extraction sequence.
+ * Sends results or debugging info back to the specific Telegram chat.
+ */
 async function runAutomation(env: Env, chatId: string, deviceId: string): Promise<string> {
   const SESSION_DATA: { cookie: string | null } = { cookie: null };
   const TARGET_URL = env.TARGET_URL_BASE + KEYGEN_PATH;
 
   // --- 1. LOGIN (POST Request) ---
   const loginPayload = {
-    'user_field': env.TARGET_USERNAME, // ⚠️ ဤ Form Field Name ကို စစ်ဆေးပါ
-    'pass_field': env.TARGET_PASSWORD, // ⚠️ ဤ Form Field Name ကို စစ်ဆေးပါ
+    // ⚠️ IMPORTANT: Replace these field names if your website uses different ones
+    'user_field': env.TARGET_USERNAME, 
+    'pass_field': env.TARGET_PASSWORD, 
     'login_submit': 'Login'
   };
 
   try {
-    // ... (Login Logic - အပြောင်းအလဲမရှိ) ...
     const loginResponse = await fetch(TARGET_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -40,13 +62,13 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
 
     // --- 2. GENERATE KEY ACTION (POST Request with parameters) ---
     const keygenPayload = {
-      // ⚠️ ဤ Form Field Name များကိုလည်း စစ်ဆေးရန် လိုအပ်ပါသည်
+      // ⚠️ IMPORTANT: Replace these field names if your website uses different ones
       'action_type': 'generate_new_key',
-      'device_count': '1',               
-      'days': '30',                      
+      'device_count': '1',               // One Device
+      'days': '30',                      // 30 Days
       'hours': '0',
       'minutes': '0',
-      'device_id_manual': deviceId,      
+      'device_id_manual': deviceId,      // Device ID from Telegram command
       'generate_submit': 'Generate Key' 
     };
 
@@ -62,9 +84,9 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
     const keygenHTML = await keygenResponse.text();
 
     // --- 3. EXTRACT THE KEY ---
-    // ⚠️ စမ်းသပ်ရန်အတွက် ဤ Regex ကို အောက်ပါအတိုင်း ပြောင်းထားပါသည် (သင်ကိုယ်တိုင် ပြင်ရန်)
-    // ဥပမာ- Key ကို h1 Tag ထဲကဟု ယူဆပြီး ပြင်ဆင်ပါ
-    const keyExtractionRegex = /<h1>(.*?)<\/h1>/s; // <--- ဤနေရာကို သင့်ဝက်ဘ်ဆိုက်နှင့် ကိုက်ညီအောင် ပြင်ပါ
+    // ⚠️ DEBUGGING STEP: You MUST replace this regex with the correct one after inspecting the HTML output.
+    // Example placeholder: trying to find the key inside an <h1> tag
+    const keyExtractionRegex = /<h1>(.*?)<\/h1>/s; 
     
     const match = keygenHTML.match(keyExtractionRegex);
     
@@ -72,9 +94,9 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
 
     if (generatedKey.startsWith("🔑")) {
         // --- DEBUGGING OUTPUT ---
-        // Key ရှာမတွေ့ပါက HTML ရဲ့ ပထမဆုံး စာလုံး ၃၀၀ ကို Telegram သို့ ပို့မည်။
-        const debugOutput = keygenHTML.substring(0, 300);
-        const debugMessage = `❌ Key ထုတ်ယူခြင်း မအောင်မြင်ပါ။ \n\n**HTML နမူနာ:**\n\`\`\`html\n${debugOutput}...\n\`\`\`\n\n**ပြင်ဆင်ရန်:** \`keyExtractionRegex\` ကို စစ်ဆေးပါ။`;
+        // If Key is not found, send the start of the HTML response to the user.
+        const debugOutput = keygenHTML.substring(0, 500); // 500 characters for more context
+        const debugMessage = `❌ Key ထုတ်ယူခြင်း မအောင်မြင်ပါ။\n\n**Server တုံ့ပြန်မှု နမူနာ (HTML ဖွဲ့စည်းပုံကို စစ်ဆေးရန်):**\n\`\`\`html\n${debugOutput}...\n\`\`\`\n\n**ပြင်ဆင်ရန်:** \`keyExtractionRegex\` ကို မှန်ကန်စွာ ပြင်ဆင်ပြီး Deploy ပြန်လုပ်ပါ။`;
         
         await sendTelegramMessage(env.BOT_TOKEN, chatId, debugMessage);
         return "Key Extraction Failed (Debugging Output Sent)";
@@ -94,6 +116,75 @@ async function runAutomation(env: Env, chatId: string, deviceId: string): Promis
 }
 
 // ----------------------------------------------------
-// [Telegram Helper Function နှင့် Worker Entry Point များသည် ယခင်အတိုင်းပင် ရှိပါသည်]
-// ... (sendTelegramMessage function) ...
-// ... (export default fetch function) ...
+// --- Telegram API Helper Function ---
+// ----------------------------------------------------
+
+/**
+ * Sends a Markdown formatted message back to the specified Telegram chat.
+ */
+async function sendTelegramMessage(token: string, chatId: string, text: string) {
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text,
+        parse_mode: 'Markdown'
+      })
+    });
+  } catch (e) {
+      console.error("Failed to send message to Telegram:", e);
+  }
+}
+
+// ----------------------------------------------------
+// --- Worker Entry Point (Handles Telegram Webhook) ---
+// ----------------------------------------------------
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    
+    if (request.method !== 'POST') {
+        return new Response('Method Not Allowed', { status: 405 });
+    }
+    
+    try {
+        const update = await request.json() as TelegramUpdate;
+
+        if (update.message && update.message.text) {
+            const text = update.message.text.trim();
+            const chatId = update.message.chat.id.toString(); 
+            
+            if (text === '/start') {
+                const welcomeMessage = "👋 **Keygen Bot** မှ ကြိုဆိုပါတယ်။ Device Key Generate လုပ်ဖို့အတွက် အောက်ပါအတိုင်း ပေးပို့ပါ။\n\n`/keygen [သင့်ရဲ့ Device ID]`\n\nဥပမာ- `/keygen My_New_Phone_2025`";
+                
+                await sendTelegramMessage(env.BOT_TOKEN, chatId, welcomeMessage);
+                return new Response('Handled /start', { status: 200 });
+                
+            } else if (text.startsWith('/keygen ')) {
+                const deviceId = text.substring(8).trim(); 
+                
+                if (deviceId.length === 0) {
+                     await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ Device ID ထည့်သွင်းဖို့ လိုပါတယ်။\n\nအသုံးပြုပုံ: `/keygen [သင့်ရဲ့ Device ID]`");
+                     return new Response('Missing Device ID', { status: 200 });
+                }
+
+                // Run the core automation task
+                const resultSummary = await runAutomation(env, chatId, deviceId);
+
+                return new Response(resultSummary, { status: 200 });
+            }
+        }
+
+        return new Response('OK', { status: 200 });
+
+    } catch (e) {
+        // If parsing fails (e.g., non-JSON request), return 200 to prevent Telegram from retrying
+        console.error("Error processing update:", e);
+        return new Response('Processing Error', { status: 200 }); 
+    }
+  },
+};
