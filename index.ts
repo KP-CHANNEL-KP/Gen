@@ -6,62 +6,61 @@ interface Env {
   TARGET_URL_BASE: string;   // http://saikokowinmyanmar123.com
 }
 
-async function send(token: string, chatId: string, text: string) {
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+async function send(t: string, c: string, m: string) {
+  await fetch(`https://api.telegram.org/bot${t}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" })
+    body: JSON.stringify({ chat_id: c, text: m, parse_mode: "Markdown" })
   }).catch(() => {});
 }
 
-// အရေးကြီးဆုံး: Cookie ကို အမြဲတမ်း ထည့်ပို့မယ်
 async function run(env: Env, chatId: string, deviceId: string) {
   let cookie = "";
 
   try {
-    // 1. Login
-    const loginRes = await fetch(env.TARGET_URL_BASE + "/KEYGEN/index.php", {
+    // Step 1: Login
+    const login = await fetch(env.TARGET_URL_BASE + "/KEYGEN/index.php", {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         user_field: env.TARGET_USERNAME,
         pass_field: env.TARGET_PASSWORD,
         login_submit: "Login"
       }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       redirect: "follow"
     });
 
-    // Cookie အကုန်ယူမယ် (အထူးသဖြင့် PHPSESSID ပါအောင်)
-    const setCookies = loginRes.headers.getSetCookie();
-    if (setCookies && setCookies.length > 0) {
-      cookie = setCookies.map(c => c.split(";")[0]).join("; ");
-    }
+    const c = login.headers.getSetCookie();
+    if (c) cookie = c.map(x => x.split(";")[0]).join("; ");
+    if (!cookie) return await send(env.BOT_TOKEN, chatId, "Login မအောင်မြင်ပါ");
 
-    if (!cookie.includes("PHPSESSID")) {
-      return await send(env.BOT_TOKEN, chatId, "Login အောင်မြင်ပေမယ့် Session Cookie မရပါ (PHPSESSID ပျောက်နေတယ်)");
-    }
+    await send(env.BOT_TOKEN, chatId, "Login အောင်မြင်ပါပြီ ✅\nDashboard ရောက်ပါပြီ...");
 
-    await send(env.BOT_TOKEN, chatId, "Login အောင်မြင်ပါပြီ ✅\nGenerate form ဖွင့်နေပါပြီ...");
-
-    // 2. Generate Form ဖွင့် (GET) — ဒီတစ်ခါ Cookie ထည့်ပို့မယ်
-    const formRes = await fetch(env.TARGET_URL_BASE + "/KEYGEN/keys.php?action=generate", {
-      headers: {
-        "Cookie": cookie,
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
-      }
+    // Step 2: Dashboard ကနေ Generate New Key ခလုတ်ရှာ
+    const dash = await fetch(env.TARGET_URL_BASE + "/KEYGEN/dashboard.php", {
+      headers: { Cookie: cookie }
     });
+    const dashHtml = await dash.text();
 
-    if (formRes.url.includes("index.php") || formRes.url.includes("login")) {
-      return await send(env.BOT_TOKEN, chatId, "Generate form ဖွင့်လို့ မရပါ။ Session ပျောက်သွားတယ်။");
-    }
+    // ခလုတ်ထဲက URL ထုတ်ယူ (onclick ထဲက သို့မဟုတ် href)
+    const genLinkMatch = dashHtml.match(/href=["']([^"']*keys\.php\?action=generate[^"']*)["']/) ||
+                         dashHtml.match(/window\.location=["']([^"']*keys\.php\?action=generate[^"']*)["']/);
+    if (!genLinkMatch) return await send(env.BOT_TOKEN, chatId, "Generate ခလုတ်မတွေ့ပါ");
 
-    // 3. Generate Key (POST)
-    const genRes = await fetch(env.TARGET_URL_BASE + "/KEYGEN/keys.php", {
+    const genUrl = env.TARGET_URL_BASE + "/" + genLinkMatch[1].replace(/^\/+/, "");
+
+    await send(env.BOT_TOKEN, chatId, "Generate Form ဖွင့်နေပါပြီ...");
+
+    // Step 3: Generate Form ဖွင့်
+    const form = await fetch(genUrl, { headers: { Cookie: cookie } });
+    const formHtml = await form.text();
+
+    // Step 4: Generate Key POST
+    const postRes = await fetch(env.TARGET_URL_BASE + "/KEYGEN/keys.php", {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        "Cookie": cookie,
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
+        "Cookie": cookie
       },
       body: new URLSearchParams({
         device_type: "one",
@@ -73,48 +72,43 @@ async function run(env: Env, chatId: string, deviceId: string) {
       }).toString()
     });
 
-    const html = await genRes.text();
+    const result = await postRes.text();
 
-    // 4. Key ရှာ
-    const keyMatch = html.match(/([A-Za-z0-9+\/=]{20,})/);
-    if (!keyMatch) {
-      const short = html.substring(0, 600) + "...";
-      return await send(env.BOT_TOKEN, chatId, `Key မတွေ့ပါ\n\nHTML:\n\`\`\`\n${short}\n\`\`\``);
+    // Step 5: Key ရှာ
+    const key = result.match(/([A-Za-z0-9+\/=]{20,})/)?.[0];
+    if (!key) {
+      const s = result.substring(0, 500);
+      return await send(env.BOT_TOKEN, chatId, `Key မတွေ့ပါ\n\n\`\`\`\n${s}\n\`\`\``);
     }
 
-    const key = keyMatch[0].trim();
-    await send(env.BOT_TOKEN, chatId, `Key ထွက်ပြီး!\n\n\`\( {key}\`\n\nDevice ID: \` \){deviceId}\``);
+    await send(env.BOT_TOKEN, chatId, `Key ထွက်ပါပြီ!\n\n\`\( {key}\`\n\nDevice ID: \` \){deviceId}\``);
 
-  } catch (err: any) {
-    await send(env.BOT_TOKEN, chatId, "Error: " + err.message);
+  } catch (e: any) {
+    await send(env.BOT_TOKEN, chatId, "Error: " + e.message);
   }
 }
 
 export default {
-  async fetch(request: Request, env: Env) {
-    if (request.method !== "POST") return new Response("ok");
+  async fetch(req: Request, env: Env) {
+    if (req.method !== "POST") return new Response("ok");
     try {
-      const update = await request.json<any>();
-      const text = update.message?.text?.trim();
-      const chatId = update.message?.chat.id.toString();
-      if (!text || !chatId) return new Response("ok");
+      const u = await req.json<any>();
+      const text = u.message?.text?.trim();
+      const chat = u.message?.chat.id.toString();
+      if (!text || !chat) return new Response("ok");
 
       if (text === "/start") {
-        await send(env.BOT_TOKEN, chatId, "Bot အဆင်သင့်ပါပြီ!\n\n`/keygen မင်းရဲ့ Device ID` လို့ ရိုက်ပါ");
+        await send(env.BOT_TOKEN, chat, "Bot အဆင်သင့်ပါပြီ!\n\n`/keygen မင်းရဲ့ Device ID`");
         return new Response("ok");
       }
-
       if (text.startsWith("/keygen ")) {
-        const deviceId = text.slice(8).trim();
-        if (!deviceId) return await send(env.BOT_TOKEN, chatId, "Device ID ထည့်ပါ");
-        await send(env.BOT_TOKEN, chatId, "ခဏစောင့်ပါ... ⏳");
-        await run(env, chatId, deviceId);
+        const id = text.slice(8).trim();
+        if (!id) return await send(env.BOT_TOKEN, chat, "Device ID ထည့်ပါ");
+        await send(env.BOT_TOKEN, chat, "ခဏစောင့်ပါ... ⏳");
+        await run(env, chat, id);
         return new Response("ok");
       }
-
       return new Response("ok");
-    } catch {
-      return new Response("ok");
-    }
+    } catch { return new Response("ok"); }
   }
 };
